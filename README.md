@@ -19,9 +19,22 @@ The graphical grid uses the same native Emacs text shaping and fontsets as the c
 
 This option takes one family name, not a CSS fallback list. After changing font settings, press `g` in existing result buffers to refresh retained results without rerunning SQL.
 
-MySQL and MariaDB require their respective external command-line client (`mysql` or `mariadb`) installed and available on `PATH`; customize `sql-grid-mysql-program` or `sql-grid-mariadb-program` if necessary.
+SQLite needs an Emacs build with native SQLite support and access to its database file. Emacs needs read access to an existing database and write access for changes; creating a database also requires write access to its parent directory. The filename may be `:memory:` for a temporary database.
 
-PostgreSQL requires `psql` 12 or newer for CSV output, installed and available on `PATH`; customize `sql-grid-postgres-program` to select another executable. PostgreSQL connections run one `psql` process per execution and do not retain session state between calls.
+MySQL and MariaDB need their external command-line clients (`mysql` and `mariadb`, respectively); installing a client does not install or start a database server. Emacs must find the selected executable through its `exec-path`/`PATH`. To select non-default executable paths, set:
+
+```elisp
+(setq sql-grid-mysql-program "/usr/bin/mysql"
+      sql-grid-mariadb-program "/usr/bin/mariadb"
+      sql-grid-postgres-program "/usr/bin/psql")
+```
+
+For Fedora, install the MariaDB client with `sudo dnf install mariadb`. This installs the client, not a running server. If Emacs cannot find a client, check its `exec-path` and `PATH`; GUI Emacs may not inherit shell environment settings. Update Emacs's environment or restart Emacs after changing it. The error `Database client executable not found: mariadb` occurs before any network connection or authentication attempt.
+
+For MySQL and MariaDB, connect to either a running local server or a reachable remote server. Provide its database, host, port, and user, plus a password the account accepts (which may be empty). The account must be allowed to connect from Emacs's host and access that database. The host defaults to `localhost`, and an empty port uses the client default. `sql-grid` exposes no socket-path setting; when using a local socket, the client uses its own defaults.
+
+PostgreSQL requires `psql` 12 or newer for CSV output; its executable must also be available through Emacs's `exec-path`/`PATH`.
+Connect to a running local or reachable remote PostgreSQL server. Provide its database and set host, port, and user as needed; omitted user and port use client defaults. Authentication must accept the configured or prompted password. The account must be allowed to connect from Emacs's host and access that database. The host defaults to `localhost`.
 
 Add `sql-grid/` to `load-path` only if Emacs cannot already find the package: `(locate-library "sql-grid")` returns `nil`. Skip the `add-to-list` line if your package manager or existing configuration already makes the package available:
 

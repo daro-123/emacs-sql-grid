@@ -535,6 +535,8 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
         result-buffer
         (sql-grid-result-format 'grid)
         (sql-grid-focus-results t)
+        (interprogram-cut-function nil)
+        (interprogram-paste-function nil)
         (kill-ring nil)
         (kill-ring-yank-pointer nil))
     (unwind-protect
@@ -550,8 +552,10 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
           (select-window (get-buffer-window result-buffer))
           (funcall (intern "evil-local-mode") 1)
           (funcall (intern "evil-normal-state"))
-          (goto-char (point-min))
-          (dolist (value '("id" "customer name" "note"
+          (goto-char (sql-grid-test--button-with-help result-buffer "id"))
+          (call-interactively #'sql-grid-copy-cell)
+          (should (equal (current-kill 0) "id"))
+          (dolist (value '("customer name" "note"
                            "1" "Alice Smith" "first note"
                            "2" "Bob Jones" "" "3" "NULL" "last note"))
             (sql-grid-test--press-in-buffer result-buffer (point) "M-f")
@@ -569,7 +573,9 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
         result-buffer
         (sql-grid-result-format 'grid)
         (sql-grid-focus-results t)
-        (sql-grid-show-cell-tooltips t))
+        (sql-grid-show-cell-tooltips t)
+        (interprogram-cut-function nil)
+        (interprogram-paste-function nil))
     (unwind-protect
         (progn
           (with-current-buffer source
@@ -610,7 +616,13 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
             (dolist (key '("<down>" "C-n" "j"))
               (move "Alice Smith" key "Bob Jones"))
             (dolist (key '("<up>" "C-p" "k"))
-              (move "Bob Jones" key "Alice Smith"))))
+              (move "Bob Jones" key "Alice Smith"))
+            (dolist (movement '(("customer name" "id")
+                                ("Alice Smith" 1)
+                                ("Bob Jones" 2)))
+              (move (car movement) "0" (cadr movement))
+              (sql-grid-copy-cell)
+              (should (equal (current-kill 0) (format "%s" (cadr movement)))))))
       (when (buffer-live-p result-buffer) (kill-buffer result-buffer))
       (kill-buffer source))))
 
@@ -677,11 +689,7 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
                  (should (equal (sql-grid-test--help-echo-at result-buffer null-button)
                                 "NULL"))
                  (dolist (event '("RET" "<return>"))
-                   (dolist (position
-                            (list long-button
-                                  (1+ long-button)
-                                  (with-current-buffer result-buffer
-                                    (button-end (button-at long-button)))))
+                   (dolist (position (list long-button (1+ long-button)))
                      (let ((source-point position)
                            (detail-buffer
                             (sql-grid-test--press-in-buffer
@@ -1680,6 +1688,103 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
                (should-not (sql-grid-test--button-with-help result-buffer "NULL"))))
          (dolist (buffer (list result-buffer source))
            (when (buffer-live-p buffer) (kill-buffer buffer))))))))
+
+(ert-deftest sql-grid-test-unfocused-results-start-at-first-cell ()
+  "New results reset the result window's cell without moving editor point."
+  (skip-unless (display-graphic-p))
+  (let ((source (generate-new-buffer " *sql-grid-test unfocused cursor*"))
+        result-buffer
+        (sql-grid-result-format 'grid)
+        (sql-grid-focus-results nil))
+    (unwind-protect
+        (save-window-excursion
+          (switch-to-buffer source)
+          (insert "-- editor position")
+          (goto-char 6)
+          (let ((source-window (selected-window)))
+            (dotimes (_ 2)
+              (setq result-buffer
+                    (sql-grid-display-results
+                     nil (list (sql-grid-result-create
+                                :columns '("id" "name")
+                                :rows '((1 "Alice") (2 "Bob"))))))
+              (should (eq (selected-window) source-window))
+              (should (= (point) 6))
+              (let ((window (get-buffer-window result-buffer)))
+                (should window)
+                (with-current-buffer result-buffer
+                  (should (equal (get-text-property (window-point window)
+                                                    'sql-grid-cell)
+                                 '(0 0 0 nil))))
+                (sql-grid-test--press-in-buffer
+                 result-buffer (window-point window) "TAB")
+                (select-window source-window)))))
+      (when (buffer-live-p result-buffer) (kill-buffer result-buffer))
+      (kill-buffer source))))
+
+(ert-deftest sql-grid-test-pagination-preserves-cell-position ()
+  "Keep page-local row and original column across pagination in each format."
+  (let ((source (generate-new-buffer " *sql-grid-test page cursor*"))
+        result-buffer
+        (sql-grid-max-rows 2)
+        (sql-grid-focus-results t)
+        (sql-grid-show-cell-tooltips t)
+        (sql-grid-result-format (if (display-graphic-p) 'grid 'text))
+        (formats (if (display-graphic-p) '(text grid) '(text))))
+    (unwind-protect
+        (progn
+          (with-current-buffer source
+            (setq result-buffer
+                  (sql-grid-display-results
+                   nil (list (sql-grid-result-create
+                              :columns '("left" "middle" "right")
+                              :rows '((1 "a" "A") (2 "b" "B")
+                                      (3 "c" "C") (4 "d" "D")
+                                      (5 "e" "E")))))))
+          (with-current-buffer result-buffer
+            (let ((cell (button-at (point))))
+              (should cell)
+              (should (equal (button-get cell 'sql-grid-cell) '(0 0 0 nil)))))
+          (dolist (format formats)
+            (with-current-buffer result-buffer
+              (sql-grid-set-result-format format)
+              (sql-grid-set-max-rows 2)
+              (let ((first (sql-grid-test--button-with-help result-buffer "left")))
+                (should first)
+                (should (equal (button-get (button-at first) 'sql-grid-cell)
+                               '(0 0 0 nil)))
+                (when (eq format 'grid)
+                  (redisplay t)
+                  (let ((cell (button-at (point))))
+                    (should cell)
+                    (should (= (overlay-start sql-grid--cursor-overlay)
+                               (button-start cell)))
+                    (should (= (overlay-end sql-grid--cursor-overlay)
+                               (button-end cell)))))
+                (goto-char (sql-grid-test--button-with-help result-buffer "b"))
+                (sql-grid-test--press-in-buffer result-buffer (point) "]")
+                (should (equal (button-get (button-at (point)) 'sql-grid-value) "d"))
+                (should (= (nth 2 (button-get (button-at (point)) 'sql-grid-cell)) 1))
+                (sql-grid-test--press-in-buffer result-buffer (point) "[")
+                (should (equal (button-get (button-at (point)) 'sql-grid-value) "b"))
+                (goto-char (sql-grid-test--button-with-help result-buffer "middle"))
+                (sql-grid-test--press-in-buffer result-buffer (point) "]")
+                (should (equal (button-get (button-at (point)) 'sql-grid-value) "middle"))
+                (should (= (nth 2 (button-get (button-at (point)) 'sql-grid-cell)) 1))
+                (goto-char (sql-grid-test--button-with-help result-buffer "d"))
+                (sql-grid-test--press-in-buffer result-buffer (point) "]")
+                (should (equal (button-get (button-at (point)) 'sql-grid-value) "e"))
+                (should (= (nth 2 (button-get (button-at (point)) 'sql-grid-cell)) 1))
+                (when (eq format 'grid)
+                  (redisplay t)
+                  (let ((cell (button-at (point))))
+                    (should cell)
+                    (should (= (overlay-start sql-grid--cursor-overlay)
+                               (button-start cell)))
+                    (should (= (overlay-end sql-grid--cursor-overlay)
+                               (button-end cell)))))))))
+      (when (buffer-live-p result-buffer) (kill-buffer result-buffer))
+      (when (buffer-live-p source) (kill-buffer source)))))
 
 (ert-deftest sql-grid-test-pagination-isolates-result-sets-and-buffers ()
   "Keep independent page positions, with all rows visible when the limit is nil."

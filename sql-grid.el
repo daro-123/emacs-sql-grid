@@ -866,18 +866,39 @@ WIDTHS determine columns. Tag each row in SET-INDEX using its original identity.
       (put-text-property start (point) 'display (or display-value "")))
     (sql-grid--make-cell-button start value full-value coordinate)))
 
+(defun sql-grid--ensure-cell-point ()
+  "Keep grid point inside a cell, leaving valid interior positions intact.
+Prefer a cell on the current row; otherwise use the next or final cell.
+Text results and buffers without cells retain normal text motion."
+  (when (and (eq sql-grid--result-format 'grid)
+             (not (button-at (point))))
+    (let* ((next (next-button (point) t))
+           (previous (or (and (> (point) (point-min))
+                              (button-at (1- (point))))
+                         (previous-button (point))))
+           (target
+            (cond
+             ((and next (<= (button-start next) (line-end-position))) next)
+             ((and previous (>= (button-start previous) (line-beginning-position)))
+              previous)
+             (next next)
+             (t previous))))
+      (when target
+        (goto-char (button-start target))))))
+
 (defun sql-grid--align-grid-cursor (window)
-  "Highlight WINDOW's grid cell without moving its raw-text point."
+  "Highlight WINDOW's grid cell, preserving valid interior text positions."
   (when (or (eq window (selected-window))
             (and (active-minibuffer-window)
                  (eq window (minibuffer-selected-window))))
+    (sql-grid--ensure-cell-point)
     (let* ((position (window-point window))
            (cell (and (eq sql-grid--result-format 'grid)
-                      (or (button-at position)
-                          (and (> position (point-min))
-                               (button-at (1- position)))))))
+                      (button-at position))))
       (if cell
           (progn
+            (when (and sql-grid--saved-cursor-type cursor-type)
+              (setcar sql-grid--saved-cursor-type cursor-type))
             (unless sql-grid--saved-cursor-type
               (setq sql-grid--saved-cursor-type (list cursor-type)))
             (setq-local cursor-type nil)
@@ -892,9 +913,11 @@ WIDTHS determine columns. Tag each row in SET-INDEX using its original identity.
             (overlay-put
              sql-grid--cursor-overlay 'face
              `(:box (:line-width -2
-                     :color ,(sql-grid--face-color 'cursor :background "#ff4080")))))
+				 :color ,(sql-grid--face-color 'cursor :background "#ff4080")))))
         (when (overlayp sql-grid--cursor-overlay)
           (delete-overlay sql-grid--cursor-overlay))
+        (when (and sql-grid--saved-cursor-type cursor-type)
+          (setcar sql-grid--saved-cursor-type cursor-type))
         (when sql-grid--saved-cursor-type
           (setq-local cursor-type (car sql-grid--saved-cursor-type))
           (setq sql-grid--saved-cursor-type nil))))))
@@ -1387,7 +1410,8 @@ Select the result window only when `sql-grid-focus-results' is non-nil."
 
 (define-derived-mode sql-grid-result-mode special-mode "SQL-Grid-Results"
   "Major mode for retained SQL results."
-  (sql-grid--setup-selection))
+  (sql-grid--setup-selection)
+  (add-hook 'post-command-hook #'sql-grid--ensure-cell-point t t))
 
 (defun sql-grid--display-results (connection results redraw)
   "Display CONNECTION's RESULTS, preserving view state only for REDRAW."
@@ -1482,15 +1506,26 @@ Select the result window only when `sql-grid-focus-results' is non-nil."
                      (insert "\n")
                      (put-text-property start (point) 'sql-grid-result-set (1- set-index))))))
       (setq sql-grid--status-lines (nreverse sql-grid--status-lines))
-      (when redraw
-        (goto-char (min position (point-max)))
-        (when coordinate (sql-grid--restore-cell coordinate offset))))
+      (if redraw
+          (progn
+            (goto-char (min position (point-max)))
+            (when coordinate (sql-grid--restore-cell coordinate offset)))
+        (when-let* ((first (next-button (point-min) t)))
+          (goto-char (button-start first)))))
     (when (buffer-live-p source)
       (with-current-buffer source (setq sql-grid--result-buffer buffer)))
     (if sql-grid-focus-results
         (pop-to-buffer buffer)
       (unless (eq (window-buffer (selected-window)) buffer)
         (display-buffer buffer '(nil (inhibit-same-window . t)))))
+    (unless redraw
+      (let ((position (with-current-buffer buffer (point))))
+        (dolist (window (get-buffer-window-list buffer nil t))
+          (set-window-point window position))))
+    (when (and (eq buffer (window-buffer (selected-window)))
+               (eq (buffer-local-value 'sql-grid--result-format buffer) 'grid))
+      (with-current-buffer buffer
+        (sql-grid--align-grid-cursor (selected-window))))
     buffer))
 
 (defun sql-grid-set-max-rows (limit)
@@ -1544,8 +1579,17 @@ and survives refresh and subsequent executions from its source."
     (user-error "No retained SQL results"))
   (unless sql-grid--page-size
     (user-error "Pagination is disabled for these results"))
-  (let* ((set-index (sql-grid--copy-set-index))
+  (let* ((cell (sql-grid--cell-at-point))
+         (coordinate (and cell (button-get cell 'sql-grid-cell)))
+         (offset (and cell (- (point) (button-start cell))))
+         (set-index (sql-grid--copy-set-index))
          (result (nth set-index sql-grid--results))
+         (entries (and result (sql-grid--sorted-row-entries result set-index)))
+         (old-page-entries (and entries (sql-grid--page-row-entries entries set-index)))
+         (row-rank (and coordinate
+                        (> (cadr coordinate) 0)
+                        (cl-position (cadr coordinate)
+                                     (mapcar #'car old-page-entries))))
          (total (if result (length (sql-grid--visible-row-entries result)) 0))
          (page (+ (or (nth set-index sql-grid--pages) 0) direction))
          (count (max 1 (ceiling total sql-grid--page-size))))
@@ -1553,11 +1597,22 @@ and survives refresh and subsequent executions from its source."
       (user-error (if (< page 0) "Already on the first page" "Already on the last page")))
     (setf (nth set-index sql-grid--pages) page)
     (sql-grid-refresh)
-    (goto-char (or (text-property-any (point-min) (point-max)
-                                      'sql-grid-result-set set-index)
-                   (point-min)))
-    (when-let* ((window (get-buffer-window (current-buffer))))
-      (set-window-start window (point)))))
+    (when coordinate
+      (let* ((new-entries (sql-grid--page-row-entries entries set-index))
+             (row-index
+              (if (zerop (cadr coordinate))
+                  0
+                (if new-entries
+                    (car (nth (min (or row-rank 0) (1- (length new-entries)))
+                              new-entries))
+                  0))))
+        (sql-grid--restore-cell
+         (list set-index row-index (nth 2 coordinate) (nth 3 coordinate))
+         offset)))
+    (when-let* ((window (get-buffer-window (current-buffer)))
+                (start (text-property-any
+                        (point-min) (point-max) 'sql-grid-result-set set-index)))
+      (set-window-start window start t))))
 
 (defun sql-grid-next-page ()
   "Show the next page of the result set under point without executing SQL."

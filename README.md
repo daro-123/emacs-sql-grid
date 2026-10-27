@@ -3,7 +3,7 @@
 ![sql-grid demo](demo.gif)
 
 > [!WARNING]
-> This extension was written with the help of a coding agent. Review the code before using it.
+> This extension was written with the help of a coding agent.
 
 `sql-grid` is a standalone Emacs package for executing SQL against SQLite, MySQL, MariaDB, and PostgreSQL and viewing query results as native-text graphical grids or aligned text tables.
 
@@ -80,14 +80,6 @@ Both connection commands offer these names through minibuffer completion. Submit
 
 An omitted or `nil` server-profile `:password` prompts securely during connection. A string, including `""`, uses that password without prompting. Configured passwords are stored in cleartext in your Emacs configuration and remain there until you remove them; use this option only if that storage is acceptable. Selecting a profile creates a fresh connection owned by the source buffer, not a shared session. Multiple buffers can select the same profile independently; disconnecting one clears only its connection password, not other buffers or the saved profile.
 
-## Cancellation warnings
-
-Read this before cancelling a running query with `C-c C-k`.
-
-- SQLite has no interrupt function in Emacs's native interface. Cancelling a SQLite query closes its connection instead of interrupting the statement. An uncommitted transaction rolls back. The buffer is left disconnected, and you must reconnect explicitly with `M-x sql-grid-connect-buffer` (`M-x sql-grid-connect` for a new editor). No automatic reconnection occurs.
-- Cancelling a query on a `:memory:` SQLite database discards the entire database, including committed rows. `sql-grid-cancel` asks for a yes-or-no confirmation in that case, and declining leaves the query running. Continue only when losing the database is acceptable.
-- MySQL and MariaDB cancellation terminates the local client process for that execution. PostgreSQL cancellation terminates its `psql` process; the server may continue the statement until it notices the disconnect.
-
 ## Commands
 
 - `M-x sql-grid-connect` opens a connected SQL editor in `sql-grid-mode`, derived from `sql-mode`.
@@ -117,14 +109,6 @@ Results appear without echoing the submitted SQL above the grid. By default, exe
 ```
 
 Set `sql-grid-focus-results` to `t` to switch to results after execution. This preference also applies to programmatic result display. Refreshing an already selected result buffer keeps that window selected.
-
-## Asynchronous execution and cancellation
-
-`C-c C-c` and `C-c C-r` start database work in the background. The source editor remains responsive while the query runs, so you can move point, edit other SQL, or work in other buffers. Only one execution can run per source buffer; starting another while one is active reports an error. The source editor header shows the running state and elapsed time, warns that cancellation closes the SQLite connection (or discards an in-memory database), and names `C-c C-k` as the cancel key. The same cancel key works in that editor's result buffer.
-
-While a query runs, its result buffer keeps the previous retained results visible. A successful execution replaces them. A failed or cancelled execution reports the error in the source editor and leaves the previous results intact. `C-c C-k` follows the cancellation warnings above: SQLite cancellation closes the connection and rolls back, and in-memory SQLite cancellation discards the whole database after confirmation. MySQL, MariaDB, and PostgreSQL cancellation terminates only the client process for that execution.
-
-The result header shows `Elapsed: N.NNNs` for the current completed set. For write statements it also shows `Affected: N` when the backend reports an integer affected-row count, including zero. Unknown affected counts are omitted. `SELECT` results do not invent an affected-row count, and statement type is detected correctly for `WITH` writes and `RETURNING`.
 
 ## Schema browsing and completion
 
@@ -456,16 +440,6 @@ Cancel a running job with `sql-grid-db-cancel`. This example uses a temporary fi
 ```
 
 `sql-grid-db-cancel` invokes a still-running callback once with a `quit` condition. It performs no confirmation, unlike interactive `sql-grid-cancel`. For SQLite it closes the worker connection, rolls back an uncommitted transaction, and invalidates the connection; other pending jobs on that connection fail, and no reconnect occurs automatically. Cancelling an in-memory SQLite job through this API therefore discards the entire database without prompting. For MySQL, MariaDB, and PostgreSQL it terminates that execution's client process only. After disconnect or SQLite cancellation, new queries are rejected until you explicitly reconnect with `sql-grid-db-connect`. While disconnect is settling pending callbacks, both new queries and reconnect attempts are rejected; callback errors are propagated only after cleanup and settlement of the other jobs.
-
-## Statement and transaction behavior
-
-Each execute invocation accepts one SQL statement. Statement execution sends the blank-line-separated block at point; region execution sends exactly the selected text. Both trim leading/trailing whitespace before execution and run asynchronously. Multiple statements in one block are rejected together, not split or partially executed. The backend also rejects client commands and statements that its single-statement scanner cannot recognize. PostgreSQL dollar-quoted bodies, `E'...'` strings, and nested block comments are treated as SQL lexical constructs; standalone `psql` meta-commands are rejected rather than interpreted. In particular, compound statements such as `CREATE TRIGGER` with internal semicolons are rejected; MySQL/MariaDB `DELIMITER` and `\C` commands are not SQL statements and are rejected. Destructive SQL is executed as supplied—review statements before running them.
-
-PostgreSQL credentials use a temporary mode-0600 libpq password file, removed after execution or cancellation; passwords are not passed as process arguments or environment variables.
-
-PostgreSQL passes SQL as one `psql --command` argument, not as client-command input. Its CSV output preserves quoted values, multiline fields, UTF-8 text, empty strings, and SQL NULL separately, including empty-SELECT headers. Because CSV makes an unquoted NULL token indistinguishable from identical text, sql-grid uses a fresh high-entropy NULL token per execution; an exact token collision in SQL output remains possible.
-
-SQLite retains one session per connection. MySQL, MariaDB, and PostgreSQL run a new client process per execution; transaction, temporary-table, and other session state does not persist between calls. Server-client cancellation terminates only that invocation's client process. MySQL/MariaDB XML may omit empty-result metadata; PostgreSQL CSV retains headers. Refresh uses retained results and never re-executes SQL. Errors leave previous results intact. Sync calls signal errors; async calls pass condition data.
 
 ## Tests
 

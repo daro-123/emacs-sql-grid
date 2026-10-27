@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Start new results at their first cell even without focusing results; keep grid point inside cells after motions such as Evil `0`, outline the complete cell without a second native cursor, and preserve page-local row and column with the selected cell visible across pagination.
+- Clean up README
+
 ## 0.1.0
 
 Initial SQL Grid release. The package namespace, files, modes, commands, options, and documentation use `sql-grid`.

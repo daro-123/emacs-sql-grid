@@ -110,6 +110,15 @@ Results appear without echoing the submitted SQL above the grid. By default, exe
 
 Set `sql-grid-focus-results` to `t` to switch to results after execution. This preference also applies to programmatic result display. Refreshing an already selected result buffer keeps that window selected.
 
+### Result window placement
+
+New results split the selected window to the right by default. Set
+`sql-grid-result-split-direction` to `right`, `below`, `left`, or `above`:
+
+```elisp
+(setq sql-grid-result-split-direction 'below)
+```
+
 ## Schema browsing and completion
 
 `C-c C-s` (`sql-grid-browse-schema`) opens a read-only schema browser owned by the current SQL editor. The browser lists tables and views with their schema-qualified names, columns and declared types, nullability, primary keys, defaults, hidden SQLite columns, indexes with ordered columns and uniqueness, partial-index predicates (or a `PARTIAL` marker when a predicate is unavailable), and foreign-key targets. SQLite discovery includes attached databases. MySQL and MariaDB discovery covers the current database only; other databases on the server are not listed. PostgreSQL discovery covers non-system schemas in the current database. Rendering the browser uses only cached schema and does not execute SQL.

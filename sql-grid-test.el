@@ -166,6 +166,45 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
         (apply #'+ (mapcar #'window-total-width windows))
       0)))
 
+(ert-deftest sql-grid-test-result-split-direction-and-focus ()
+  "Place new results beside the source and reuse their window on refresh."
+  (dolist (direction '(right below left above))
+    (dolist (focus '(nil t))
+      (save-window-excursion
+        (delete-other-windows)
+        (let ((source (generate-new-buffer " *sql-grid-test split*"))
+              (sql-grid-result-format 'text)
+              (sql-grid-result-split-direction direction)
+              (sql-grid-focus-results focus)
+              buffer)
+          (unwind-protect
+              (progn
+                (switch-to-buffer source)
+                (insert "SELECT 1")
+                (let ((source-window (selected-window))
+                      (source-point (point)))
+                  (setq buffer
+                        (sql-grid-display-results
+                         nil (list (sql-grid-result-create
+                                    :columns '("id") :rows '((1))))))
+                  (let* ((result-window (get-buffer-window buffer))
+                         (source-edges (window-edges source-window))
+                         (result-edges (window-edges result-window)))
+                    (should (eq (window-buffer source-window) source))
+                    (should (= (window-point source-window) source-point))
+                    (should (eq (selected-window)
+                                (if focus result-window source-window)))
+                    (pcase direction
+                      ('right (should (>= (nth 0 result-edges) (nth 2 source-edges))))
+                      ('left (should (<= (nth 2 result-edges) (nth 0 source-edges))))
+                      ('below (should (>= (nth 1 result-edges) (nth 3 source-edges))))
+                      ('above (should (<= (nth 3 result-edges) (nth 1 source-edges)))))
+                    (with-current-buffer buffer (sql-grid-refresh))
+                    (should (eq (get-buffer-window buffer) result-window))
+                    (should (= (length (window-list)) 2)))))
+            (dolist (item (list buffer source))
+              (when (buffer-live-p item) (kill-buffer item)))))))))
+
 
 (ert-deftest sql-grid-test-frozen-column-names-follow-scrolling-and-view-changes ()
   "Keep literal headings and status visible while retained rows scroll."

@@ -140,6 +140,14 @@ or moving its cursor.  This also applies to programmatic result display."
   :type 'boolean
   :group 'sql-grid)
 
+(defcustom sql-grid-result-split-direction 'right
+  "Direction to split the selected window when showing new SQL results.
+Use `right', `below', `left', or `above'.  An already visible result
+window is reused; changing this option does not move existing windows.
+This applies to query execution and programmatic result display."
+  :type '(choice (const right) (const below) (const left) (const above))
+  :group 'sql-grid)
+
 (defvar-local sql-grid--connection nil)
 (defvar-local sql-grid--result-buffer nil)
 (defvar-local sql-grid--results nil)
@@ -515,6 +523,23 @@ statement; use `sql-grid-execute-region' for an explicit selection."
       (setq end (point)))
     (sql-grid--execute begin end)))
 
+(defun sql-grid--show-result-buffer (buffer focus-results)
+  "Show BUFFER in the configured direction and select it if FOCUS-RESULTS.
+Reuse an existing result window on the selected frame."
+  (let ((window
+         (or (get-buffer-window buffer)
+             (display-buffer
+              buffer
+              `((display-buffer-reuse-window display-buffer-in-direction)
+                (direction . ,sql-grid-result-split-direction)
+                (,(if (memq sql-grid-result-split-direction '(left right))
+                      'window-width
+                    'window-height)
+                 . 0.5)
+                (inhibit-same-window . t))))))
+    (when (and focus-results (window-live-p window))
+      (select-window window))))
+
 (defun sql-grid--prepare-result-buffer (connection source focus-results)
   "Show SOURCE's result buffer while a query runs, keeping old results.
 Bind cancellation and update CONNECTION without replacing retained rows."
@@ -524,10 +549,7 @@ Bind cancellation and update CONNECTION without replacing retained rows."
     (setq-local sql-grid--connection connection)
     (setq-local sql-grid--execution-source source)
     (local-set-key (kbd "C-c C-k") #'sql-grid-cancel))
-  (if focus-results
-      (pop-to-buffer sql-grid--result-buffer)
-    (unless (get-buffer-window sql-grid--result-buffer)
-      (display-buffer sql-grid--result-buffer '(nil (inhibit-same-window . t)))))
+  (sql-grid--show-result-buffer sql-grid--result-buffer focus-results)
   (sql-grid--refresh-execution-display source))
 
 (defun sql-grid--execution-callback (source generation connection page-size
@@ -1606,10 +1628,7 @@ Select the result window only when `sql-grid-focus-results' is non-nil."
           (goto-char (button-start first)))))
     (when (buffer-live-p source)
       (with-current-buffer source (setq sql-grid--result-buffer buffer)))
-    (if sql-grid-focus-results
-        (pop-to-buffer buffer)
-      (unless (eq (window-buffer (selected-window)) buffer)
-        (display-buffer buffer '(nil (inhibit-same-window . t)))))
+    (sql-grid--show-result-buffer buffer sql-grid-focus-results)
     (unless redraw
       (let ((position (with-current-buffer buffer (point))))
         (dolist (window (get-buffer-window-list buffer nil t))

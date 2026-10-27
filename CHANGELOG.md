@@ -2,6 +2,7 @@
 
 ## 0.1.1
 
+- Add split direction
 - Add `sql-grid-freeze-column-names`, disabled by default, to keep column names below the fixed status bar in grid and text results. Follow horizontal scrolling, column moves, sort indicators, and result-set changes without executing SQL.
 - Show column names only in the fixed bar when freezing is enabled, removing the duplicate heading row from the scrolling table.
 - Start new results at their first cell even without focusing results; keep grid point inside cells after motions such as Evil `0`, outline the complete cell without a second native cursor, and preserve page-local row and column with the selected cell visible across pagination.

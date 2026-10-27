@@ -158,6 +158,15 @@ before calling `local-set-key`. Refresh and format changes do not recreate
 the map or overwrite user bindings. Native text views retain character and
 line movement; grid views use cell movement.
 
+## Freeze column names
+
+Column names scroll with the result rows by default. To keep them fixed
+above the rows, enable:
+
+```elisp
+(setq sql-grid-freeze-column-names t)
+```
+
 ## Result row limit and pagination
 
 `sql-grid-max-rows` controls rows displayed per page, defaulting to `1000`.

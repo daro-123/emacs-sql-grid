@@ -167,6 +167,73 @@ Use PREFIX when non-nil instead of COMPLETION's buffer prefix."
       0)))
 
 
+(ert-deftest sql-grid-test-frozen-column-names-follow-scrolling-and-view-changes ()
+  "Keep literal headings and status visible while retained rows scroll."
+  (skip-unless (display-graphic-p))
+  (let ((source (generate-new-buffer " *sql-grid-test frozen headings*"))
+        (sql-grid-result-format 'grid)
+        (sql-grid-focus-results t)
+        (sql-grid-freeze-column-names nil)
+        (sql-grid-max-rows nil)
+        buffer)
+    (unwind-protect
+        (save-window-excursion
+          (with-current-buffer source
+            (setq buffer
+                  (sql-grid-display-results
+                   nil (list (sql-grid-result-create
+                              :columns '("identifier" "100% name")
+                              :rows (cl-loop for i from 1 to 100
+                                             collect (list i (format "Customer %d" i))))
+                             (sql-grid-result-create
+                              :columns '("other heading") :rows '(("other value")))))))
+          (select-window (get-buffer-window buffer))
+          (delete-other-windows)
+          (with-current-buffer buffer
+            (should (string-match-p "Records: 100"
+                                    (format-mode-line header-line-format)))
+            (should-not tab-line-format)
+            (should (sql-grid-test--buffer-contains-p buffer "identifier"))
+            (setq sql-grid-freeze-column-names t)
+            (sql-grid-refresh)
+            (redisplay t)
+            (should-not (sql-grid-test--buffer-contains-p buffer "identifier"))
+            (should-not (sql-grid-test--buffer-contains-p buffer "100% name"))
+            (let ((start (window-start)))
+              (dotimes (_ 40)
+                (execute-kbd-macro (kbd "C-n")))
+              (redisplay t)
+              (should (> (window-start) start)))
+            (let ((heading (format-mode-line header-line-format)))
+              (should (string-match-p "identifier" heading))
+              (should (string-match-p "100% name" heading)))
+            (should (string-match-p "Records: 100"
+                                    (format-mode-line tab-line-format)))
+            (sql-grid-sort-column 1)
+            (should (string-match-p "100% name ↑1"
+                                    (format-mode-line header-line-format)))
+            (sql-grid-move-column-left)
+            (should (string-match-p "100% name.*identifier"
+                                    (format-mode-line header-line-format)))
+            (sql-grid-set-result-format 'text)
+            (should (string-match-p "100% name.*identifier"
+                                    (format-mode-line header-line-format)))
+            (should-not (sql-grid-test--buffer-contains-p buffer "identifier"))
+            (should-not (sql-grid-test--buffer-contains-p buffer "100% name"))
+            (goto-char (sql-grid-test--button-with-help buffer "other value"))
+            (should (string-match-p "other heading"
+                                    (format-mode-line header-line-format)))
+            (should (string-match-p "Set 2/2.*Records: 1"
+                                    (format-mode-line tab-line-format)))
+            (setq sql-grid-freeze-column-names nil)
+            (sql-grid-refresh)
+            (should-not tab-line-format)
+            (should (sql-grid-test--buffer-contains-p buffer "other heading"))
+            (should-not (string-match-p "other heading"
+                                        (format-mode-line header-line-format)))))
+      (dolist (item (list buffer source))
+        (when (buffer-live-p item) (kill-buffer item))))))
+
 (ert-deftest sql-grid-test-graphical-header-status-tracks-current-set ()
   "Show literal filter text and current set counts and page in the header."
   (skip-unless (display-graphic-p))

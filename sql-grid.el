@@ -83,6 +83,14 @@ there to switch views without executing SQL again."
                  (const :tag "Text table" text))
   :group 'sql-grid)
 
+(defcustom sql-grid-freeze-column-names nil
+  "Whether column names stay visible above scrolling result rows.
+When non-nil, show status in the tab line and column names in the
+header line, in both grid and text views.  Refresh existing results
+with `sql-grid-refresh' after changing this option."
+  :type 'boolean
+  :group 'sql-grid)
+
 (defcustom sql-grid-grid-font-family nil
   "Emacs font family for native grid cells, or nil to inherit.
 Use an Emacs family name, not a CSS fallback list."
@@ -144,6 +152,8 @@ or moving its cursor.  This also applies to programmatic result display."
 (defvar-local sql-grid--max-rows-override-set nil)
 (defvar-local sql-grid--sorts nil)
 (defvar-local sql-grid--status-lines nil)
+(defvar-local sql-grid--column-name-lines nil)
+(defvar-local sql-grid--saved-tab-line-format nil)
 (defvar-local sql-grid--cursor-overlay nil)
 (defvar-local sql-grid--saved-cursor-type nil)
 
@@ -1023,7 +1033,8 @@ ROW-NUMBERS preserves original row identities when filtering."
   (let* ((headings (sql-grid--column-headings columns order set-index))
          (columns (sql-grid--ordered-values columns order))
          (rows (mapcar (lambda (row) (sql-grid--ordered-values row order)) rows))
-         (row-numbers (or row-numbers (number-sequence 1 (length rows)))))
+         (row-numbers (or row-numbers (number-sequence 1 (length rows))))
+         (header-start (point)))
     (pcase format
       ('grid
        (let* ((window (or (get-buffer-window (current-buffer) t)
@@ -1039,24 +1050,91 @@ ROW-NUMBERS preserves original row identities when filtering."
               (widths (car metrics))
               (pixel-rows (cdr metrics)))
          (sql-grid--grid-row columns (car display-rows) (car pixel-rows)
-                              widths 0 t set-index order frame font-face nil)
+                             widths 0 t set-index order frame font-face nil)
+         (sql-grid--remember-column-name-line set-index header-start)
          (cl-loop for row in rows
                   for display-row in (cdr display-rows)
                   for pixel-row in (cdr pixel-rows)
                   for index in row-numbers
                   for stripe-index from 1 do
                   (sql-grid--grid-row row display-row pixel-row widths index
-                                       nil set-index order frame font-face
-                                       stripe-index))))
+                                      nil set-index order frame font-face
+                                      stripe-index))))
       ('text
        (let ((widths (sql-grid--text-column-widths columns rows headings)))
          (sql-grid--insert-text-border widths)
          (sql-grid--insert-text-row columns widths 0 set-index order headings)
+         (sql-grid--remember-column-name-line set-index header-start)
          (sql-grid--insert-text-border widths)
          (cl-loop for row in rows for index in row-numbers do
                   (sql-grid--insert-text-row row widths index set-index order))
          (when rows (sql-grid--insert-text-border widths)))))
     (unless rows (insert "(0 rows)\n"))))
+
+(defun sql-grid--remember-column-name-line (set-index start)
+  "Move the just-inserted heading at START into the fixed bar for SET-INDEX."
+  (when sql-grid-freeze-column-names
+    (save-excursion
+      (forward-line (if (eq sql-grid--result-format 'text) -1 -2))
+      (let ((position (line-beginning-position))
+            (end (line-end-position))
+            chunks)
+        (while (< position end)
+          (let* ((next (next-single-property-change position 'display nil end))
+                 (display (get-text-property position 'display)))
+            (push (if (stringp display)
+                      (propertize display 'face (get-text-property position 'face))
+                    (buffer-substring position next))
+                  chunks)
+            (setq position next)))
+        (let ((line (apply #'concat (nreverse chunks))))
+          ;; Header strings are display-only, not buffer-position buttons.
+          (remove-text-properties
+           0 (length line)
+           '(button nil category nil keymap nil action nil mouse-face nil) line)
+          (setf (nth set-index sql-grid--column-name-lines) line))))
+    (delete-region start (point))))
+
+(defun sql-grid--frozen-column-names ()
+  "Return current headings, clipped to the displaying window's scroll."
+  (let* ((line (nth (sql-grid--copy-set-index) sql-grid--column-name-lines))
+         (window (selected-window))
+         (scroll (window-hscroll window)))
+    (when line
+      (let* ((graphic (display-graphic-p (window-frame window)))
+             (pixels (* scroll (frame-char-width (window-frame window))))
+             (low 0)
+             (high (length line))
+             (width 0))
+        (if (not graphic)
+            (setq line (truncate-string-to-width line (string-width line) scroll))
+          ;; Find the first visible character without scanning every prefix.
+          (while (< low high)
+            (let* ((middle (/ (+ low high 1) 2))
+                   (size (string-pixel-width (substring line 0 middle))))
+              (if (<= size pixels)
+                  (setq low middle width size)
+                (setq high (1- middle)))))
+          (let ((rest (substring line low)))
+            (when (and (> pixels width) (< low (length line)))
+              (setq rest
+                    (concat
+                     (propertize " " 'display
+                                 `(space :width
+                                         (,(- (string-pixel-width
+                                               (substring line 0 (1+ low)))
+                                              pixels))))
+                     (substring line (1+ low)))))
+            (setq line
+                  (concat
+                   (propertize " " 'display
+                               `(space :width
+                                       (,(+ (or (car (window-fringes window)) 0)
+                                            (* (or (car (window-margins window)) 0)
+                                               (frame-char-width
+                                                (window-frame window)))))))
+                   rest))))
+        (replace-regexp-in-string "%" "%%" line t t)))))
 
 
 
@@ -1456,7 +1534,21 @@ Select the result window only when `sql-grid-focus-results' is non-nil."
       (setq-local sql-grid--results results)
       (setq-local sql-grid--result-format format)
       (setq-local sql-grid--status-lines nil)
-      (setq-local header-line-format '(:eval (sql-grid--header-line)))
+      (setq-local sql-grid--column-name-lines
+                  (when sql-grid-freeze-column-names
+                    (make-list (length results) nil)))
+      (if sql-grid-freeze-column-names
+          (progn
+            (unless sql-grid--saved-tab-line-format
+              (setq sql-grid--saved-tab-line-format (list tab-line-format)))
+            (setq-local tab-line-format '(:eval (sql-grid--header-line))))
+        (when sql-grid--saved-tab-line-format
+          (setq-local tab-line-format (car sql-grid--saved-tab-line-format))
+          (setq sql-grid--saved-tab-line-format nil)))
+      (setq-local header-line-format
+                  (if sql-grid-freeze-column-names
+                      '(:eval (sql-grid--frozen-column-names))
+                    '(:eval (sql-grid--header-line))))
       (sql-grid--evil-bind-result-keys)
       (let ((inhibit-read-only t))
         (erase-buffer)
